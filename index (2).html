@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Recovery Motherboards</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  :root { padding-top: env(safe-area-inset-top,0px); padding-bottom: env(safe-area-inset-bottom,0px); }
+  body {
+    margin: 0; padding: 14px; background: #141414; color: #f0f0f0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  header { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+  h1 { font-size: 1.05rem; margin: 0; letter-spacing:.02em; }
+  .hint { font-size:.72rem; color:#777; margin:0 0 12px; }
+
+  .toolbar { display:flex; gap:8px; margin-bottom:14px; }
+  button {
+    border:none; border-radius:10px; font-size:.95rem; font-weight:600;
+    color:#fff; padding:13px 14px; cursor:pointer; flex:1;
+  }
+  button:disabled { opacity:.35; cursor:not-allowed; }
+  button:active:not(:disabled) { transform: scale(.985); }
+  .b-add  { background:#2962ff; }
+  .b-all  { background:#2d8f4e; }
+  .b-sm   { flex:1; padding:11px; font-size:.88rem; }
+  .b-arm  { background:#c5292a; }
+  .b-safe { background:#2d8f4e; }
+  .b-re   { background:#555; }
+
+  .grid { display:grid; grid-template-columns:1fr; gap:12px; }
+  @media (min-width: 720px) { .grid { grid-template-columns:1fr 1fr; } }
+
+  .card { background:#232323; border-radius:12px; padding:14px; border:2px solid transparent; }
+  .card.stale { opacity:.72; border-color:#6b5a1f; }
+  .card.live  { border-color:#2a2a2a; }
+
+  .chead { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+  .cname { font-weight:700; font-size:1rem; letter-spacing:.03em; }
+  .dot { width:9px; height:9px; border-radius:50%; display:inline-block; margin-right:7px; vertical-align:middle; }
+  .dot.on { background:#2d8f4e; }
+  .dot.off{ background:#8a6a1f; }
+  .age { font-size:.7rem; color:#9a8a5a; }
+  .age.on { color:#6a6a6a; }
+
+  .state {
+    text-align:center; padding:20px 10px; border-radius:9px;
+    font-size:1.6rem; font-weight:800; letter-spacing:.12em; margin-bottom:8px;
+    background:#3a3a3a; color:#888;
+  }
+  .state.safe  { background:#2d8f4e; color:#fff; }
+  .state.armed { background:#c5292a; color:#fff; }
+  .state.armed.livepulse { animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity:.7; } }
+
+  .rail { text-align:center; font-size:.74rem; letter-spacing:.08em;
+          padding:7px; border-radius:6px; margin-bottom:10px; background:#333; color:#8a8a8a; }
+  .rail.live { background:#6b1f1f; color:#ffb4b4; }
+
+  .rows { margin-bottom:10px; }
+  .row { display:flex; justify-content:space-between; padding:5px 0; font-size:.85rem; border-bottom:1px solid #313131; }
+  .row:last-child { border-bottom:none; }
+  .k { color:#808080; }
+  .v { font-weight:600; }
+  .v.warn { color:#d4853c; }
+  .v.bad  { color:#e05555; }
+
+  .banner { padding:9px; border-radius:7px; margin-bottom:8px; text-align:center;
+            font-size:.76rem; font-weight:700; display:none; }
+  .banner.show { display:block; }
+  .b-bypass { background:#6b1f1f; border:1px solid #c5292a; }
+  .b-fault  { background:#5a3a1a; border:1px solid #d4853c; }
+  .b-fs     { background:#5a3a1a; border:1px solid #d4853c; }
+  .b-stale  { background:#4a3f16; border:1px solid #9a8233; color:#f0dfa0; }
+
+  .btnrow { display:flex; gap:7px; }
+  .log { font-family: ui-monospace, monospace; font-size:.68rem; color:#7a7a7a;
+         background:#0e0e0e; padding:9px; border-radius:7px; height:88px;
+         overflow-y:scroll; white-space:pre-wrap; margin-top:14px; }
+  .empty { color:#666; font-size:.85rem; text-align:center; padding:26px 10px;
+           border:1px dashed #333; border-radius:11px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🚀 Recovery Motherboards</h1>
+  <span id="count" class="age on">0 / 4</span>
+</header>
+<p class="hint">Status is retained after disconnect. A dimmed card with a STALE badge is a
+<em>last known</em> reading, not a live one.</p>
+
+<div class="toolbar">
+  <button id="b-add" class="b-add">+ Add board</button>
+  <button id="b-all" class="b-all" disabled>ALL SAFE</button>
+</div>
+
+<div id="grid" class="grid"></div>
+<div id="empty" class="empty">No boards yet — tap “Add board”.<br>Each board needs its own tap.</div>
+
+<div id="log" class="log"></div>
+
+<script>
+// All boards share these UUIDs. The firmware no longer XORs them with BOARD_ID;
+// boards are told apart by advertised name and by BOARD_ID in status byte 8.
+const SVC_UUID    = '12345678-1234-5678-1234-56789abcbe00';
+const CMD_UUID    = '12345678-1234-5678-1234-56789abcbe01';
+const STATUS_UUID = '12345678-1234-5678-1234-56789abcbe02';
+
+const MAGIC = [0xDE, 0xAD, 0xBE, 0xEF];
+const OP_SAFE = 0x01, OP_ARM = 0x02;
+const FLAG_BYPASS = 0x01, FLAG_FAULT = 0x02, FLAG_LOWBATT = 0x04;
+const MAX_BOARDS = 4;
+const STORE_KEY = 'rcv_boards_v1';
+
+// name -> { name, device, cmdChar, connected, lastSeen, st:{...} }
+const boards = new Map();
+
+const $ = id => document.getElementById(id);
+const log = m => {
+  const el = $('log');
+  el.textContent += `[${new Date().toLocaleTimeString()}] ${m}\n`;
+  el.scrollTop = el.scrollHeight;
+};
+
+// ---------- persistence ----------
+function save() {
+  try {
+    const out = {};
+    for (const [name, b] of boards) if (b.st) out[name] = { st: b.st, lastSeen: b.lastSeen };
+    localStorage.setItem(STORE_KEY, JSON.stringify(out));
+  } catch (e) { /* storage can fail; UI still works */ }
+}
+function restore() {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (!raw) return;
+    const obj = JSON.parse(raw);
+    for (const name of Object.keys(obj)) {
+      boards.set(name, { name, device:null, cmdChar:null, connected:false,
+                         lastSeen: obj[name].lastSeen, st: obj[name].st });
+    }
+    if (boards.size) log(`Restored ${boards.size} board(s) from last session`);
+  } catch (e) { /* ignore corrupt store */ }
+}
+
+function ageText(ms) {
+  if (ms == null) return '—';
+  const s = Math.floor((Date.now() - ms) / 1000);
+  if (s < 5) return 'just now';
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s/60)}m ago`;
+  return `${Math.floor(s/3600)}h ago`;
+}
+
+// ---------- rendering ----------
+function render() {
+  const grid = $('grid');
+  grid.innerHTML = '';
+  $('empty').style.display = boards.size ? 'none' : 'block';
+  $('count').textContent = `${[...boards.values()].filter(b=>b.connected).length} / ${MAX_BOARDS}`;
+  $('b-all').disabled = ![...boards.values()].some(b => b.connected);
+  $('b-add').disabled = boards.size >= MAX_BOARDS;
+
+  for (const b of boards.values()) {
+    const st = b.st;
+    const stale = !b.connected;
+    const armed = st ? st.armed : false;
+    const railLive = st ? st.vsw > 2500 : false;   // 1S LiPo threshold
+
+    const card = document.createElement('div');
+    card.className = 'card ' + (stale ? 'stale' : 'live');
+
+    // 1S LiPo, flight-readiness colouring:
+    //   >= 4.10 V  normal   — freshly charged, good to fly
+    //   <  4.10 V  amber    — not fully charged, swap before flight
+    //   <  3.80 V  red      — below the Blue Raven's continuity-detect threshold
+    const vbatCls = !st ? '' : (st.vbat < 3800 ? ' bad' : st.vbat < 4100 ? ' warn' : '');
+
+    card.innerHTML = `
+      <div class="chead">
+        <span class="cname"><span class="dot ${stale?'off':'on'}"></span>${b.name}</span>
+        <span class="age ${stale?'':'on'}">${stale ? 'last seen ' + ageText(b.lastSeen) : 'live'}</span>
+      </div>
+
+      <div class="banner b-stale ${stale && st ? 'show' : ''}">
+        ⏱ STALE — last known state, board not connected
+      </div>
+      <div class="banner b-bypass ${st && (st.flags & FLAG_BYPASS) ? 'show':''}">
+        ⛔ BYPASS ACTIVE — rail live, cannot be safed remotely
+      </div>
+      <div class="banner b-fault ${st && (st.flags & FLAG_FAULT) ? 'show':''}">
+        ⚠️ SWITCH FAULT — armed but rail dead (series switch open?)
+      </div>
+      <div class="banner b-fs ${st && st.forceSafe ? 'show':''}">
+        ⚠️ Force-safe held — arming refused
+      </div>
+
+      <div class="state ${st ? (armed?'armed':'safe') : ''} ${(!stale && armed)?'livepulse':''}">
+        ${st ? (armed ? 'ARMED' : 'SAFE') : '—'}
+      </div>
+      <div class="rail ${railLive?'live':''}">
+        PYRO RAIL: ${st ? (railLive ? 'LIVE' : 'DEAD') : '—'}
+      </div>
+
+      <div class="rows">
+        <div class="row"><span class="k">Battery</span><span class="v${vbatCls}">${st ? (st.vbat/1000).toFixed(2)+' V' : '—'}</span></div>
+        <div class="row"><span class="k">Pyro rail</span><span class="v${railLive?' bad':''}">${st ? (st.vsw/1000).toFixed(2)+' V' : '—'}</span></div>
+        <div class="row"><span class="k">Uptime</span><span class="v">${st ? st.uptime+' s' : '—'}</span></div>
+        <div class="row"><span class="k">Board ID</span><span class="v">${st ? '#'+st.boardId : '—'}</span></div>
+      </div>
+
+      <div class="btnrow">
+        ${ b.connected
+          ? `<button class="b-arm b-sm"  data-act="arm"  data-n="${b.name}" ${st && st.forceSafe ? 'disabled':''}>ARM</button>
+             <button class="b-safe b-sm" data-act="safe" data-n="${b.name}">SAFE</button>`
+          : `<button class="b-re b-sm" data-act="reconnect" data-n="${b.name}">Reconnect</button>
+             <button class="b-re b-sm" data-act="forget"    data-n="${b.name}">Forget</button>` }
+      </div>`;
+    grid.appendChild(card);
+  }
+
+  grid.querySelectorAll('button[data-act]').forEach(btn => {
+    btn.addEventListener('click', () => handle(btn.dataset.act, btn.dataset.n));
+  });
+}
+
+// ---------- BLE ----------
+function parseStatus(dv) {
+  if (dv.byteLength < 12) return null;
+  return {
+    armed:    dv.getUint8(0) === 1,
+    vbat:    (dv.getUint8(1) << 8) | dv.getUint8(2),
+    vsw:     (dv.getUint8(3) << 8) | dv.getUint8(4),
+    uptime:  (dv.getUint8(5) << 8) | dv.getUint8(6),
+    forceSafe: dv.getUint8(7) === 1,
+    boardId:  dv.getUint8(8),
+    flags:    dv.getUint8(9),
+  };
+}
+
+async function attach(device) {
+  const name = device.name || 'RocketRcv-?';
+  let b = boards.get(name);
+  if (!b) b = { name, device, cmdChar:null, connected:false, lastSeen:null, st:null };
+  b.device = device;
+  boards.set(name, b);
+
+  device.addEventListener('gattserverdisconnected', () => {
+    b.connected = false;
+    b.cmdChar = null;
+    log(`${name} disconnected — keeping last known status`);
+    save(); render();
+  });
+
+  const server  = await device.gatt.connect();
+  const service = await server.getPrimaryService(SVC_UUID);
+  b.cmdChar     = await service.getCharacteristic(CMD_UUID);
+  const statusChar = await service.getCharacteristic(STATUS_UUID);
+
+  await statusChar.startNotifications();
+  statusChar.addEventListener('characteristicvaluechanged', e => {
+    const st = parseStatus(e.target.value);
+    if (!st) return;
+    b.st = st; b.lastSeen = Date.now(); b.connected = true;
+    save(); render();
+  });
+
+  const first = parseStatus(await statusChar.readValue());
+  if (first) { b.st = first; b.lastSeen = Date.now(); }
+  b.connected = true;
+  log(`${name} connected`);
+  save(); render();
+}
+
+async function addBoard() {
+  try {
+    log('Scanning…');
+    const device = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: 'RocketRcv' }],
+      optionalServices: [SVC_UUID],
+    });
+    await attach(device);
+  } catch (err) {
+    log('Add failed: ' + err.message);
+  }
+}
+
+async function send(name, opcode) {
+  const b = boards.get(name);
+  if (!b || !b.cmdChar) { log(`${name} not connected`); return; }
+  try {
+    await b.cmdChar.writeValue(new Uint8Array([...MAGIC, opcode, 0]));
+    log(`${name} <- ${opcode === OP_ARM ? 'ARM' : 'SAFE'}`);
+  } catch (err) {
+    log(`${name} write failed: ` + err.message);
+  }
+}
+
+async function handle(act, name) {
+  const b = boards.get(name);
+  if (act === 'arm')  return send(name, OP_ARM);
+  if (act === 'safe') return send(name, OP_SAFE);
+  if (act === 'forget') { boards.delete(name); save(); render(); return; }
+  if (act === 'reconnect') {
+    if (b && b.device) {
+      try { await attach(b.device); }
+      catch (err) { log(`${name} reconnect failed: ` + err.message); }
+    } else {
+      log(`${name}: no handle from this session — use “Add board”`);
+      addBoard();
+    }
+  }
+}
+
+$('b-add').addEventListener('click', addBoard);
+$('b-all').addEventListener('click', async () => {
+  for (const b of boards.values()) if (b.connected) await send(b.name, OP_SAFE);
+});
+
+if (!navigator.bluetooth) {
+  log('Web Bluetooth unavailable here.');
+  log('Use Bluefy on iOS, or Chrome/Edge on desktop or Android.');
+  $('b-add').disabled = true;
+}
+
+restore();
+render();
+setInterval(render, 1000);   // keeps the "last seen" ages ticking
+</script>
+</body>
+</html>
